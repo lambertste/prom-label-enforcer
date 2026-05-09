@@ -3,70 +3,60 @@ package proxy
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"time"
 )
 
-// ServerConfig holds HTTP server configuration.
+// ServerConfig holds configuration for the HTTP proxy server.
 type ServerConfig struct {
 	ListenAddr      string
-	UpstreamURL     string
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
-	ShutdownTimeout time.Duration
+	IdleTimeout     time.Duration
+	RateLimit       float64 // requests per second per client (0 = disabled)
+	RateLimitBurst  float64
 }
 
 // DefaultServerConfig returns a ServerConfig with sensible defaults.
 func DefaultServerConfig() ServerConfig {
 	return ServerConfig{
-		ListenAddr:      ":9090",
-		ReadTimeout:     10 * time.Second,
-		WriteTimeout:    10 * time.Second,
-		ShutdownTimeout: 5 * time.Second,
+		ListenAddr:     ":9090",
+		ReadTimeout:    10 * time.Second,
+		WriteTimeout:   10 * time.Second,
+		IdleTimeout:    30 * time.Second,
+		RateLimit:      100,
+		RateLimitBurst: 20,
 	}
 }
 
-// Server wraps the HTTP server and proxy handler.
-type Server struct {
-	httpServer *http.Server
-	cfg        ServerConfig
-}
-
-// NewServer constructs a Server with the given handler and config.
-func NewServer(h http.Handler, cfg ServerConfig) *Server {
+// NewServer constructs an *http.Server wired with the enforcer handler,
+// optional rate limiting, and a health endpoint.
+func NewServer(cfg ServerConfig, handler http.Handler) *http.Server {
 	mux := http.NewServeMux()
-	mux.Handle("/receive", h)
 	mux.HandleFunc("/healthz", healthz)
 
-	return &Server{
-		cfg: cfg,
-		httpServer: &http.Server{
-			Addr:         cfg.ListenAddr,
-			Handler:      mux,
-			ReadTimeout:  cfg.ReadTimeout,
-			WriteTimeout: cfg.WriteTimeout,
-		},
+	var root http.Handler = handler
+	if cfg.RateLimit > 0 {
+		rl := NewRateLimiter(cfg.RateLimit, cfg.RateLimitBurst)
+		root = rl.Middleware(handler)
 	}
-}
+	mux.Handle("/receive", root)
 
-// Start begins listening and blocks until the server stops.
-func (s *Server) Start() error {
-	log.Printf("proxy server listening on %s", s.cfg.ListenAddr)
-	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return fmt.Errorf("server error: %w", err)
+	return &http.Server{
+		Addr:         cfg.ListenAddr,
+		Handler:      mux,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+		IdleTimeout:  cfg.IdleTimeout,
 	}
-	return nil
-}
-
-// Shutdown gracefully stops the server.
-func (s *Server) Shutdown() error {
-	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
-	defer cancel()
-	return s.httpServer.Shutdown(ctx)
 }
 
 func healthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
+	fmt.Fprintln(w, "ok")
+}
+
+// Shutdown gracefully stops the server within the provided context deadline.
+func Shutdown(ctx context.Context, srv *http.Server) error {
+	return srv.Shutdown(ctx)
 }
