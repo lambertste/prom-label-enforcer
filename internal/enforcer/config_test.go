@@ -85,3 +85,16 @@ label_rules:
 		t.Fatal("expected error for empty label name, got nil")
 	}
 }
+
+func TestLoadConfig_InvalidYAML(t *testing.T) {
+	content := `
+label_rules:
+  - name: env
+    required: [this is not valid yaml
+`
+	path := writeTemp(t, content)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected error for invalid YAML, got nil")
+	}
+}
