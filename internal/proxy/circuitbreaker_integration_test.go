@@ -86,3 +86,40 @@ func TestInstrumentedCircuitBreaker_OpensOnErrors(t *testing.T) {
 		t.Errorf("expected 503, got %d", rec.Code)
 	}
 }
+
+// TestInstrumentedCircuitBreaker_ReclosesAfterTimeout verifies that the circuit
+// transitions from open back to half-open and then closed after a successful
+// request once the timeout has elapsed.
+func TestInstrumentedCircuitBreaker_ReclosesAfterTimeout(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	icb := newInstrumentedCB("test", CircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		Timeout:          20 * time.Millisecond,
+	}, reg)
+	errorHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	successHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Trip the circuit.
+	icb.Middleware(errorHandler).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/receive", nil))
+	if icb.State() != StateOpen {
+		t.Fatalf("expected StateOpen after failure, got %v", icb.State())
+	}
+
+	// Wait for the timeout to expire so the circuit moves to half-open.
+	time.Sleep(30 * time.Millisecond)
+
+	// A successful request should close the circuit.
+	rec := httptest.NewRecorder()
+	icb.Middleware(successHandler).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/receive", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 in half-open state, got %d", rec.Code)
+	}
+	if icb.State() != StateClosed {
+		t.Errorf("expected StateClosed after successful probe, got %v", icb.State())
+	}
+}
