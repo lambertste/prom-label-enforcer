@@ -16,7 +16,7 @@ func DefaultResponseTimeMiddlewareConfig() *ResponseTimeMetrics {
 // responseTimeWriter wraps http.ResponseWriter to capture the status code.
 type responseTimeWriter struct {
 	http.ResponseWriter
-	status int
+	status  int
 	written bool
 }
 
@@ -38,6 +38,9 @@ func (w *responseTimeWriter) statusCode() int {
 // NewResponseTimeMiddleware returns an HTTP middleware that measures the
 // latency of every request and records it via m. If m is nil the middleware
 // is a no-op pass-through.
+//
+// The recorded latency includes the full time spent in downstream handlers,
+// including any time waiting for the proxied backend to respond.
 func NewResponseTimeMiddleware(m *ResponseTimeMetrics) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
